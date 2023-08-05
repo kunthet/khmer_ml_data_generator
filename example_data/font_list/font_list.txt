@@ -1,0 +1,4 @@
+KhmerOS.ttf
+KhmerOSmetalchrieng.ttf
+KhmerOSmuollight.ttf
+KhmerOSsiemreap.ttf
