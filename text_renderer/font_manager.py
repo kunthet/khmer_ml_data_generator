@@ -6,6 +6,8 @@ from typing import List, Set, Tuple, Dict, Optional
 from PIL import ImageFont
 from PIL.ImageFont import FreeTypeFont
 from fontTools.ttLib import TTFont, TTCollection
+from text_renderer.utils import FontText
+from text_renderer.utils.errors import RetryError, PanicError
 from loguru import logger
 
 from text_renderer.utils.errors import PanicError
@@ -44,6 +46,23 @@ class FontManager:
                     self.font_paths.append(str(font_path))
 
         self._load_font_support_chars()
+
+    def apply_font_random(self, text: str):
+        """
+        This method ensures that the selected font supports all characters.
+
+        Returns:
+            FontText: A FontText object contains text and font.
+
+        """
+        font, support_chars, font_path = self.get_font()
+        status, intersect = self.check_support(text, support_chars)
+        if not status:
+            err_msg = (f"{self.__class__.__name__} {font_path} not support chars: {intersect}")
+            logger.debug(err_msg)
+            raise RetryError(err_msg)
+
+        return FontText(font, text, font_path)
 
     def get_font(self) -> Tuple[FreeTypeFont, Set, str]:
         font_path = random.choice(self.font_paths)

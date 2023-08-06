@@ -10,7 +10,8 @@ from PIL.ImageFont import FreeTypeFont
 from tenacity import retry
 
 from text_renderer.bg_manager import BgManager
-from text_renderer.config import RenderCfg
+from text_renderer.effect import DropoutRand, DropoutVertical, Effects, Line, OneOf
+from text_renderer.config import RenderCfg, NormPerspectiveTransformCfg, FixedTextColorCfg
 from text_renderer.utils.draw_utils import draw_text_on_bg, transparent_img
 from text_renderer.utils import utils
 from text_renderer.utils.errors import PanicError
@@ -21,47 +22,25 @@ from text_renderer.utils.types import FontColor, is_list
 
 
 class Render:
-    def __init__(self, cfg: RenderCfg):
-        self.cfg = cfg
-        self.layout = cfg.layout
-        if isinstance(cfg.corpus, list) and len(cfg.corpus) == 1:
-            self.corpus = cfg.corpus[0]
-        else:
-            self.corpus = cfg.corpus
-
-        if is_list(self.corpus) and is_list(self.cfg.corpus_effects):
-            if len(self.corpus) != len(self.cfg.corpus_effects):
-                raise PanicError(
-                    f"corpus length({self.corpus}) is not equal to corpus_effects length({self.cfg.corpus_effects})"
-                )
-
-        if is_list(self.corpus) and (
-            self.cfg.corpus_effects and not is_list(self.cfg.corpus_effects)
-        ):
-            raise PanicError("corpus is list, corpus_effects is not list")
-
-        if not is_list(self.corpus) and is_list(self.cfg.corpus_effects):
-            raise PanicError("corpus_effects is list, corpus is not list")
-
-        self.bg_manager = BgManager(cfg.bg_dir, cfg.pre_load_bg_img)
+    def __init__(self, render_config: RenderCfg):
+        self.render_config = render_config
+        self.layout = render_config.layout
+        self.bg_manager = BgManager(render_config.bg_dir, render_config.pre_load_bg_img)
 
     @retry
-    def __call__(self, *args, **kwargs) -> Tuple[np.ndarray, str]:
+    def __call__(self, font_text: FontText) -> Tuple[np.ndarray, str]:
         try:
-            if self._should_apply_layout():
-                img, text, cropped_bg, transformed_text_mask = self.gen_multi_corpus()
-            else:
-                img, text, cropped_bg, transformed_text_mask = self.gen_single_corpus()
+            img, text, cropped_bg, transformed_text_mask = self.gen_single_corpus(font_text)
 
             if img.size == (0,0): 
                 return np.array(img), text
             
-            if self.cfg.render_effects is not None:
-                img, _ = self.cfg.render_effects.apply_effects(
+            if self.render_config.render_effects is not None:
+                img, _ = self.render_config.render_effects.apply_effects(
                     img, BBox.from_size(img.size)
                 )
 
-            if self.cfg.return_bg_and_mask:
+            if self.render_config.return_bg_and_mask:
                 gray_text_mask = np.array(transformed_text_mask.convert("L"))
                 _, gray_text_mask = cv2.threshold(
                     gray_text_mask, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU
@@ -90,31 +69,27 @@ class Render:
             logger.exception(e)
             raise e
 
-    def gen_single_corpus(self) -> Tuple[PILImage, str, PILImage, PILImage]:
-        font_text = self.corpus.sample()
+    def gen_single_corpus(self, font_text: FontText) -> Tuple[PILImage, str, PILImage, PILImage]:
+        # font_text = self.corpus.sample()
 
         bg = self.bg_manager.get_bg()
-        if self.cfg.text_color_cfg is not None:
-            text_color = self.cfg.text_color_cfg.get_color(bg)
+        text_color =  (255, 50, 0, 255)
+        if self.render_config.text_color_cfg is not None:
+            text_color = self.render_config.text_color_cfg.get_color(bg)
 
-        # corpus text_color has higher priority than RenderCfg.text_color_cfg
-        if self.corpus.cfg.text_color_cfg is not None:
-            text_color = self.corpus.cfg.text_color_cfg.get_color(bg)
+        char_spacing= -1 #self.corpus.render_config.char_spacing
+        text_mask = draw_text_on_bg(font_text, text_color, char_spacing )
 
-        text_mask = draw_text_on_bg(
-            font_text, text_color, char_spacing=self.corpus.cfg.char_spacing
-        )
-
-        if self.cfg.corpus_effects is not None and text_mask.size != (0, 0):
-            text_mask, _ = self.cfg.corpus_effects.apply_effects(
+        if self.render_config.corpus_effects is not None and text_mask.size != (0, 0):
+            text_mask, _ = self.render_config.corpus_effects.apply_effects(
                 text_mask, BBox.from_size(text_mask.size)
             )
 
-        if self.cfg.perspective_transform is not None:
+        if self.render_config.perspective_transform is not None:
             if text_mask.size == (0, 0):
                 transformed_text_mask = text_mask
             else:
-                transformer = PerspectiveTransform(self.cfg.perspective_transform)
+                transformer = PerspectiveTransform(self.render_config.perspective_transform)
                 # TODO: refactor this, now we must call get_transformed_size to call gen_warp_matrix
                 _ = transformer.get_transformed_size(text_mask.size)
                 
@@ -137,80 +112,11 @@ class Render:
 
         return img, font_text.text, cropped_bg, transformed_text_mask
 
-    def gen_multi_corpus(self) -> Tuple[PILImage, str, PILImage, PILImage]:
-        font_texts: List[FontText] = [it.sample() for it in self.corpus]
-
-        bg = self.bg_manager.get_bg()
-
-        text_color = None
-        if self.cfg.text_color_cfg is not None:
-            text_color = self.cfg.text_color_cfg.get_color(bg)
-
-        text_masks, text_bboxes = [], []
-        for i in range(len(font_texts)):
-            font_text = font_texts[i]
-
-            if text_color is None:
-                _text_color = self.corpus[i].cfg.text_color_cfg.get_color(bg)
-            else:
-                _text_color = text_color
-            text_mask = draw_text_on_bg(
-                font_text, _text_color, char_spacing=self.corpus[i].cfg.char_spacing
-            )
-
-            text_bbox = BBox.from_size(text_mask.size)
-            if self.cfg.corpus_effects is not None:
-                effects = self.cfg.corpus_effects[i]
-                if effects is not None:
-                    text_mask, text_bbox = effects.apply_effects(text_mask, text_bbox)
-            text_masks.append(text_mask)
-            text_bboxes.append(text_bbox)
-
-        text_mask_bboxes, merged_text = self.layout(
-            font_texts,
-            [it.copy() for it in text_bboxes],
-            [BBox.from_size(it.size) for it in text_masks],
-        )
-        if len(text_mask_bboxes) != len(text_bboxes):
-            raise PanicError(
-                "points and text_bboxes should have same length after layout output"
-            )
-
-        merged_bbox = BBox.from_bboxes(text_mask_bboxes)
-        merged_text_mask = transparent_img(merged_bbox.size)
-        for text_mask, bbox in zip(text_masks, text_mask_bboxes):
-            merged_text_mask.paste(text_mask, bbox.left_top)
-
-        if self.cfg.perspective_transform is not None:
-            transformer = PerspectiveTransform(self.cfg.perspective_transform)
-            # TODO: refactor this, now we must call get_transformed_size to call gen_warp_matrix
-            _ = transformer.get_transformed_size(merged_text_mask.size)
-
-            (
-                transformed_text_mask,
-                transformed_text_pnts,
-            ) = transformer.do_warp_perspective(merged_text_mask)
-        else:
-            transformed_text_mask = merged_text_mask
-
-        if self.cfg.layout_effects is not None:
-            transformed_text_mask, _ = self.cfg.layout_effects.apply_effects(
-                transformed_text_mask, BBox.from_size(transformed_text_mask.size)
-            )
-
-        img, cropped_bg = self.paste_text_mask_on_bg(bg, transformed_text_mask)
-
-        return img, merged_text, cropped_bg, transformed_text_mask
-
-    def paste_text_mask_on_bg(
-        self, bg: PILImage, transformed_text_mask: PILImage
-    ) -> Tuple[PILImage, PILImage]:
+    def paste_text_mask_on_bg(self, bg: PILImage, transformed_text_mask: PILImage) -> Tuple[PILImage, PILImage]:
         """
-
         Args:
             bg:
             transformed_text_mask:
-
         Returns:
 
         """
@@ -224,7 +130,7 @@ class Render:
                 y_offset + transformed_text_mask.height,
             )
         )
-        if self.cfg.return_bg_and_mask:
+        if self.render_config.return_bg_and_mask:
             _bg = bg.copy()
         else:
             _bg = bg
@@ -250,14 +156,33 @@ class Render:
         return isinstance(self.corpus, list) and len(self.corpus) > 1
 
     def norm(self, image: np.ndarray) -> np.ndarray:
-        if self.cfg.gray:
+        if self.render_config.gray:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        if self.cfg.height != -1 and self.cfg.height != image.shape[0]:
+        if self.render_config.height != -1 and self.render_config.height != image.shape[0]:
             height, width = image.shape[:2]
-            width = int(width // (height / self.cfg.height))
+            width = int(width // (height / self.render_config.height))
             image = cv2.resize(
-                image, (width, self.cfg.height), interpolation=cv2.INTER_CUBIC
+                image, (width, self.render_config.height), interpolation=cv2.INTER_CUBIC
             )
 
         return image
+
+
+
+class KhmerTextRender(Render):
+    def __init__(self, bg_dir: str):
+        super().__init__(RenderCfg(
+            bg_dir= bg_dir,
+            perspective_transform= NormPerspectiveTransformCfg(20, 20, 1.5),
+            gray=True,
+            layout_effects=None,
+            layout=None,
+            height=32,
+            corpus_effects=Effects(
+                [
+                    Line(0.5, color_cfg=FixedTextColorCfg()),
+                    OneOf([DropoutRand(p=0.2), DropoutVertical(p=0.2)]),
+                ]
+            ),
+        ))

@@ -45,6 +45,7 @@ class EnumCorpus(Corpus):
     """
     index : int = 0
     random: bool = True
+    
     def __init__(self, cfg: "CorpusCfg", random: bool = True):
         super().__init__(cfg)
         
@@ -52,10 +53,10 @@ class EnumCorpus(Corpus):
         self.cfg: EnumCorpusCfg
         
         if len(self.cfg.text_paths) == 0 and len(self.cfg.items) == 0:
-            raise PanicError(f"text_paths or items must not be empty")
+            raise PanicError("text_paths or items must not be empty")
 
         if len(self.cfg.text_paths) != 0 and len(self.cfg.items) != 0:
-            raise PanicError(f"only one of text_paths or items can be set")
+            raise PanicError("only one of text_paths or items can be set")
 
         self.texts: List[str] = []
 
@@ -77,10 +78,17 @@ class EnumCorpus(Corpus):
                 self.font_manager.filter_font_path(
                     self.cfg.filter_font_min_support_chars
                 )
+        self._count = len(self.texts)
                 
     def count(self):
-        return len(self.texts)
+        return self._count
     
+    def sample_at(self, index: int):
+        if (index <0 or index >= self._count):
+            raise ValueError(f'Index out of range. Index: {index} not in range({self._count})')
+        text = self.texts[index]
+        return self.font_manager.apply_font_random(text)
+        
     def get_text(self):
         if self.random:
             text = random_choice(self.texts, self.cfg.num_pick)

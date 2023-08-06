@@ -154,7 +154,7 @@ class RenderCfg:
     return_bg_and_mask: bool
     """
 
-    corpus: Union["Corpus", List["Corpus"]]
+    # corpus: Union["Corpus", List["Corpus"]]
     corpus_effects: Union[Effects, List[Effects]] = None
     bg_dir: Path = None
     pre_load_bg_img: bool = True

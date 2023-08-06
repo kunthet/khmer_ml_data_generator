@@ -3,7 +3,7 @@ import re
 from abc import abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple, Union
+from typing import Tuple, Union, Set
 
 from loguru import logger
 from tenacity import retry, stop_after_attempt
@@ -63,23 +63,14 @@ class Corpus:
     
     offset = 0
 
-    def __init__(
-        self, cfg: "CorpusCfg",
-    ):
+    def __init__(self, cfg: "CorpusCfg", chars=None):
+        self.chars = chars
         self.cfg = cfg
-        self.font_manager = FontManager(
-            cfg.font_dir, cfg.font_list_file, cfg.font_size,
-        )
+        self.font_manager = FontManager(cfg.font_dir, cfg.font_list_file, cfg.font_size)
 
     @retry
     def sample(self):
-        """
-        This method ensures that the selected font supports all characters.
-
-        Returns:
-            FontText: A FontText object contains text and font.
-
-        """
+        
         try:
             text = self.get_text()
         except Exception as e:
@@ -88,17 +79,13 @@ class Corpus:
 
         if self.cfg.clip_length != -1 and len(text) > self.cfg.clip_length:
             text = text[: self.cfg.clip_length]
-
-        font, support_chars, font_path = self.font_manager.get_font()
-        status, intersect = self.font_manager.check_support(text, support_chars)
-        if not status:
-            err_msg = (
-                f"{self.__class__.__name__} {font_path} not support chars: {intersect}"
-            )
-            logger.debug(err_msg)
-            raise RetryError(err_msg)
-
-        return FontText(font, text, font_path, self.cfg.horizontal)
+        
+        return self.font_manager.apply_font_random(text)
+        
+        
+    @abstractmethod
+    def sample_at(self, index: int):
+        pass
     
     def set_offset(self, value):
         self.offset = value
@@ -124,6 +111,7 @@ class Corpus:
             Union[str, List[str]]: string(s) removed chars not exist in chars file
 
         """
+        
         if chars_file is None or not chars_file.exists():
             raise PanicError(f"chars_file not exists: {chars_file}")
 

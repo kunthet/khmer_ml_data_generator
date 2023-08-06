@@ -5,13 +5,13 @@ from typing import Dict
 import lmdb
 import cv2
 import numpy as np
-
+from filelock import FileLock
 
 class Dataset:
     def __init__(self, data_dir: str, jpg_quality: int = 95):
         self.data_dir = data_dir
         if not os.path.exists(data_dir):
-            os.makedirs(data_dir)
+            os.makedirs(data_dir, exist_ok=True)
         self.jpg_quality = jpg_quality
 
     def encode_param(self):
@@ -80,17 +80,22 @@ class ImgDataset(Dataset):
 
     LABEL_NAME = "labels.json"
 
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str, label_filename: str = None):
         super().__init__(data_dir)
         self._img_dir = os.path.join(data_dir, "images")
         if not os.path.exists(self._img_dir):
             os.makedirs(self._img_dir)
-        self._label_path = os.path.join(data_dir, self.LABEL_NAME)
+        
+        if label_filename is None:    
+            self._label_path = os.path.join(data_dir, self.LABEL_NAME)
+        else:
+            self._label_path = os.path.join(data_dir, label_filename)
 
         self._data = {"num-samples": 0, "labels": {}, "sizes": {}}
         if os.path.exists(self._label_path):
-            with open(self._label_path, "r", encoding="utf-8") as f:
-                self._data = json.load(f)
+            with FileLock(self._label_path + '.lock'):
+                with open(self._label_path, "r", encoding="utf-8") as f:
+                    self._data = json.load(f)
 
     def write(self, name: str, image: np.ndarray, label: str):
         
@@ -123,8 +128,9 @@ class ImgDataset(Dataset):
         self._data["num-samples"] = count
 
     def close(self):
-        with open(self._label_path, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, indent=2, ensure_ascii=False)
+        with FileLock(self._label_path + '.lock'):
+            with open(self._label_path, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, indent=2, ensure_ascii=False)
 
 
 class LmdbDataset(Dataset):
